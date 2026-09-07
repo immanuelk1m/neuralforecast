@@ -2,13 +2,35 @@ name: Research backend verification
 on:
   push:
     branches: [feat/exogenous-models-round2-20260908]
+  pull_request:
+    paths:
+      - 'neuralforecast/models/research.py'
+      - 'neuralforecast/models/_official_source.py'
+      - 'neuralforecast/models/chronosx.py'
+      - 'neuralforecast/models/moirai2.py'
+      - 'neuralforecast/models/_uni2ts_worker.py'
+      - 'tests/test_research_models.py'
+      - 'scripts/prepare_research_sources.py'
+      - '.github/workflows/research-backends.yml'
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: research-backends-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  sources:
+  official-source-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [core, chronosx, moirai2]
+    env:
+      NF_RESEARCH_SOURCES: ${{ github.workspace }}/.research-sources
+      NF_REQUIRE_RESEARCH_TESTS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,54 +38,51 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Collect official source snapshots without datasets or credentials
+      - name: Install real NeuralForecast CPU runtime
         run: |
-          python - <<'PY'
-          import concurrent.futures
-          import json
-          import pathlib
-          import subprocess
-          import tarfile
-          import tempfile
-          sources = {
-              'dag': ('decisionintelligence/DAG', 'main'),
-              'kite': ('decisionintelligence/KITE', 'main'),
-              'apt': ('blisky-li/APT', 'main'),
-              'glaff': ('ForestsKing/GLAFF', 'main'),
-              'uni2ts': ('SalesforceAIResearch/uni2ts', 'main'),
-              'rag4cts': ('RAG4CTS-Project/RAG4CTS', 'main'),
-              'chronosx': ('amazon-science/chronos-forecasting', 'chronosx'),
-              'aurora': ('decisionintelligence/Aurora', 'main'),
-              'tgtsf': ('VEWOXIC/TGTSF', 'main'),
-              'spectf': ('hiepnh137/SpecTF', 'main'),
-          }
-          destination = pathlib.Path('source-snapshots')
-          destination.mkdir()
-          def collect(item):
-              key, (repo, ref) = item
-              with tempfile.TemporaryDirectory() as tmp:
-                  def git(*args):
-                      return subprocess.check_output(['git', '-C', tmp, *args], text=True, timeout=300)
-                  git('clone', '--filter=blob:none', '--depth', '1', '--no-checkout', '--branch', ref, 'https://github.com/' + repo + '.git', '.')
-                  sha = git('rev-parse', 'HEAD').strip()
-                  paths = git('ls-tree', '-r', '--name-only', 'HEAD').splitlines()
-                  paths = [p for p in paths if pathlib.PurePosixPath(p).suffix in {'.py', '.md', '.txt', '.json', '.yml', '.yaml', '.toml', '.cfg'} or pathlib.PurePosixPath(p).name.startswith('LICENSE')]
-                  git('archive', '--format=tar', '-o', str((destination / (key + '.tar')).resolve()), 'HEAD', '--', *paths)
-              return key, {'repository': repo, 'revision': sha, 'ref': ref}
-          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-              manifest = dict(executor.map(collect, sources.items()))
-          (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-          # The checked-out target is included to verify against the exact NF base.
-          with tarfile.open(destination / 'neuralforecast.tar', 'w') as archive:
-              for root in ['neuralforecast', 'tests', 'docs']:
-                  for path in pathlib.Path(root).rglob('*.py'):
-                      archive.add(path)
-              for path in ['pyproject.toml', 'CONTRIBUTING.md', 'MANIFEST.in']:
-                  archive.add(path)
-          print(json.dumps(manifest, indent=2))
-          PY
+          python -m pip install --upgrade pip
+          python -m pip install 'torch==2.10.0' --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . pytest einops reformer-pytorch matplotlib
+      - name: Prepare six reviewed official architecture checkouts
+        if: matrix.backend == 'core'
+        run: python scripts/prepare_research_sources.py "$NF_RESEARCH_SOURCES" --models dag kite apt glaff tgtsf spectf
+      - name: Test actual architectures and NF fit/predict/save/load
+        if: matrix.backend == 'core'
+        run: python -m pytest -q -o addopts='' tests/test_research_models.py -k 'not chronosx and not moirai2'
+      - name: Install pinned ChronosX dependencies and source
+        if: matrix.backend == 'chronosx'
+        run: |
+          python scripts/prepare_research_sources.py "$NF_RESEARCH_SOURCES" --models chronosx
+          python -m pip install 'chronos-forecasting[training]==1.5.0' 'transformers==4.47.1' 'accelerate==0.34.2'
+      - name: Test actual ChronosX with tiny from-scratch T5 checkpoint
+        if: matrix.backend == 'chronosx'
+        env:
+          NF_TEST_CHRONOSX: '1'
+          HF_HUB_OFFLINE: '1'
+        run: python -m pytest -q -o addopts='' tests/test_research_models.py -k chronosx
+      - name: Install separate pinned uni2ts environment
+        if: matrix.backend == 'moirai2'
+        run: |
+          python scripts/prepare_research_sources.py "$NF_RESEARCH_SOURCES" --models uni2ts
+          python -m venv .venv-uni2ts
+          .venv-uni2ts/bin/python -m pip install --upgrade pip
+          .venv-uni2ts/bin/python -m pip install 'torch==2.4.1' --index-url https://download.pytorch.org/whl/cpu
+          .venv-uni2ts/bin/python -m pip install 'jax==0.4.35' 'jaxlib==0.4.35' "$NF_RESEARCH_SOURCES/uni2ts"
+      - name: Test actual Moirai2 worker and NF persistence
+        if: matrix.backend == 'moirai2'
+        env:
+          NF_UNI2TS_PYTHON: ${{ github.workspace }}/.venv-uni2ts/bin/python
+          HF_HUB_OFFLINE: '1'
+        run: python -m pytest -q -o addopts='' tests/test_research_models.py -k moirai2
+      - name: Record environment and reviewed source provenance
+        if: always()
+        run: |
+          mkdir -p research-test-evidence
+          python -m pip freeze > research-test-evidence/pip-freeze-${{ matrix.backend }}.txt
+          if [ -f "$NF_RESEARCH_SOURCES/manifest.json" ]; then cp "$NF_RESEARCH_SOURCES/manifest.json" research-test-evidence/sources-${{ matrix.backend }}.json; fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: official-source-snapshots
-          path: source-snapshots/
-          retention-days: 3
+          name: research-test-evidence-${{ matrix.backend }}
+          path: research-test-evidence/
+          retention-days: 14

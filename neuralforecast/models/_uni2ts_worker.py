@@ -17,23 +17,32 @@ import torch
 def main(directory: str) -> None:
     directory = Path(directory)
     config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
-    names = {"moirai": "Moirai", "moirai_moe": "MoiraiMoE"}
+    names = {"moirai": "Moirai", "moirai_moe": "MoiraiMoE", "moirai2": "Moirai2"}
     prefix = names[config["kind"]]
     package = importlib.import_module("uni2ts.model." + config["kind"])
     torch.manual_seed(config["random_seed"])
     options = {"revision": config["revision"]} if config["revision"] is not None else {}
     module = getattr(package, prefix + "Module").from_pretrained(config["model_id"], **options)
+    forecast_options = {} if config["kind"] == "moirai2" else {
+        "patch_size": config["patch_size"], "num_samples": config["num_samples"],
+    }
     forecast = getattr(package, prefix + "Forecast")(
         module=module, prediction_length=config["h"], context_length=config["input_size"],
         target_dim=1, feat_dynamic_real_dim=config["futr_size"],
-        past_feat_dynamic_real_dim=config["hist_size"], patch_size=config["patch_size"],
-        num_samples=config["num_samples"],
+        past_feat_dynamic_real_dim=config["hist_size"], **forecast_options,
     ).to(config["device"]).eval()
     with np.load(directory / "inputs.npz", allow_pickle=False) as payload:
         inputs = {key: torch.from_numpy(payload[key].copy()).to(config["device"]) for key in payload.files}
     with torch.no_grad():
         samples = forecast(**inputs)
-        prediction = samples.mean(dim=1).cpu().numpy()
+        if config["kind"] == "moirai2":
+            levels = list(module.quantile_levels)
+            median = next((i for i, q in enumerate(levels) if abs(q - 0.5) < 1e-6), None)
+            if median is None:
+                raise ValueError("Moirai2 checkpoint has no median quantile.")
+            prediction = samples[:, median].cpu().numpy()
+        else:
+            prediction = samples.mean(dim=1).cpu().numpy()
     np.savez(directory / "outputs.npz", prediction=prediction)
 
 
