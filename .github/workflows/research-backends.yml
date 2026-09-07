@@ -1,0 +1,69 @@
+name: Research backend verification
+on:
+  push:
+    branches: [feat/exogenous-models-round2-20260908]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Collect official source snapshots without datasets or credentials
+        run: |
+          python - <<'PY'
+          import concurrent.futures
+          import json
+          import pathlib
+          import subprocess
+          import tarfile
+          import tempfile
+          sources = {
+              'dag': ('decisionintelligence/DAG', 'main'),
+              'kite': ('decisionintelligence/KITE', 'main'),
+              'apt': ('blisky-li/APT', 'main'),
+              'glaff': ('ForestsKing/GLAFF', 'main'),
+              'uni2ts': ('SalesforceAIResearch/uni2ts', 'main'),
+              'rag4cts': ('RAG4CTS-Project/RAG4CTS', 'main'),
+              'chronosx': ('amazon-science/chronos-forecasting', 'chronosx'),
+              'aurora': ('decisionintelligence/Aurora', 'main'),
+              'tgtsf': ('VEWOXIC/TGTSF', 'main'),
+              'spectf': ('hiepnh137/SpecTF', 'main'),
+          }
+          destination = pathlib.Path('source-snapshots')
+          destination.mkdir()
+          def collect(item):
+              key, (repo, ref) = item
+              with tempfile.TemporaryDirectory() as tmp:
+                  def git(*args):
+                      return subprocess.check_output(['git', '-C', tmp, *args], text=True, timeout=300)
+                  git('clone', '--filter=blob:none', '--depth', '1', '--no-checkout', '--branch', ref, 'https://github.com/' + repo + '.git', '.')
+                  sha = git('rev-parse', 'HEAD').strip()
+                  paths = git('ls-tree', '-r', '--name-only', 'HEAD').splitlines()
+                  paths = [p for p in paths if pathlib.PurePosixPath(p).suffix in {'.py', '.md', '.txt', '.json', '.yml', '.yaml', '.toml', '.cfg'} or pathlib.PurePosixPath(p).name.startswith('LICENSE')]
+                  git('archive', '--format=tar', '-o', str((destination / (key + '.tar')).resolve()), 'HEAD', '--', *paths)
+              return key, {'repository': repo, 'revision': sha, 'ref': ref}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+              manifest = dict(executor.map(collect, sources.items()))
+          (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+          # The checked-out target is included to verify against the exact NF base.
+          with tarfile.open(destination / 'neuralforecast.tar', 'w') as archive:
+              for root in ['neuralforecast', 'tests', 'docs']:
+                  for path in pathlib.Path(root).rglob('*.py'):
+                      archive.add(path)
+              for path in ['pyproject.toml', 'CONTRIBUTING.md', 'MANIFEST.in']:
+                  archive.add(path)
+          print(json.dumps(manifest, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: official-source-snapshots
+          path: source-snapshots/
+          retention-days: 3
