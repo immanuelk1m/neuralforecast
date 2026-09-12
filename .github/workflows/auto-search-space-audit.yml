@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - 'neuralforecast/auto.py'
+      - 'neuralforecast/auto_external.py'
       - 'neuralforecast/common/**'
       - 'neuralforecast/models/**'
       - 'tests/test_auto_search_spaces.py'
@@ -22,30 +23,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Inspect Auto declarations
-        run: |
-          python - <<'PY'
-          import ast
-          from pathlib import Path
-          for path in sorted(Path('neuralforecast').rglob('*.py')):
-              tree = ast.parse(path.read_text())
-              for node in tree.body:
-                  if isinstance(node, ast.ClassDef) and node.name.startswith('Auto'):
-                      print(f'{path}:{node.lineno}: {node.name}')
-          PY
-      - name: Retain audit inputs
-        uses: actions/upload-artifact@v4
+          python-version: '3.13'
+      - name: Prepare offline audit dependencies
+        run: python -m pip download --only-binary=:all: --no-deps --dest /tmp/audit-wheels 'ray[train,tune]>=2.2.0' 'pyarrow>=23.0.1' 'coreforecast>=0.0.6' 'utilsforecast>=0.2.3'
+      - uses: actions/upload-artifact@v4
         with:
-          name: auto-search-audit-inputs
+          name: auto-audit-wheels
           retention-days: 1
-          path: |
-            neuralforecast
-            tests
-            pyproject.toml
-            .pre-commit-config.yaml
-            .github/workflows
-            nbs/models.ipynb
-            nbs/auto.ipynb
-            nbs/common.base_auto.ipynb
-            docs
+          path: /tmp/audit-wheels
