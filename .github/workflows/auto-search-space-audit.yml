@@ -1,0 +1,51 @@
+name: Auto search-space audit
+
+on:
+  push:
+    branches: [fix/auto-search-space-audit-20260912]
+  pull_request:
+    paths:
+      - 'neuralforecast/auto.py'
+      - 'neuralforecast/common/**'
+      - 'neuralforecast/models/**'
+      - 'tests/test_auto_search_spaces.py'
+      - '.github/workflows/auto-search-space-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Inspect Auto declarations
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          for path in sorted(Path('neuralforecast').rglob('*.py')):
+              tree = ast.parse(path.read_text())
+              for node in tree.body:
+                  if isinstance(node, ast.ClassDef) and node.name.startswith('Auto'):
+                      print(f'{path}:{node.lineno}: {node.name}')
+          PY
+      - name: Retain audit inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-search-audit-inputs
+          retention-days: 1
+          path: |
+            neuralforecast
+            tests
+            pyproject.toml
+            .pre-commit-config.yaml
+            .github/workflows
+            nbs/models.ipynb
+            nbs/auto.ipynb
+            nbs/common.base_auto.ipynb
+            docs
