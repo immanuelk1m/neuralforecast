@@ -25,7 +25,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Prepare offline audit dependencies
-        run: python -m pip download --only-binary=:all: --no-deps --dest /tmp/audit-wheels 'ray[train,tune]>=2.2.0' 'pyarrow>=23.0.1' 'coreforecast>=0.0.6' 'utilsforecast>=0.2.3'
+        run: |
+          python -m pip download --only-binary=:all: --no-deps --dest /tmp/audit-wheels 'ray[train,tune]>=2.2.0' 'pyarrow>=23.0.1' 'coreforecast>=0.0.6' 'utilsforecast>=0.2.3'
       - uses: actions/upload-artifact@v4
         with:
           name: auto-audit-wheels
