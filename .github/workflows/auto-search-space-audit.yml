@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   publish:
-    if: github.event.head_commit.message == 'test: apply verified Auto audit patch'
+    if: >-
+      github.event.head_commit.message == 'test: apply verified Auto audit patch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
