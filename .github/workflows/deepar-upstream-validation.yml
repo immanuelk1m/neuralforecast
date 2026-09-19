@@ -1,0 +1,76 @@
+name: DeepAR upstream validation
+
+on:
+  push:
+    branches: ['ci/deepar-upstream-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ebea9f3b958760ff97c948fa5bcd7ac482734e3a
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Verify the exact upstream candidate and scope
+        run: |
+          test "$(git rev-parse HEAD)" = ebea9f3b958760ff97c948fa5bcd7ac482734e3a
+          test "$(git rev-parse HEAD^)" = 344aaffd504245ff661bd9e211f220f9214a1876
+          git diff --check HEAD^ HEAD
+          git diff --stat HEAD^ HEAD
+          test "$(git diff --name-only HEAD^ HEAD | wc -l)" -eq 2
+      - name: Install the documented CPU development environment
+        run: uv sync --python '${{ matrix.python-version }}' --group dev --torch-backend cpu
+      - name: Report runtime versions
+        run: uv run --no-sync python -c 'import sys, torch, pandas, pytorch_lightning; print(sys.version); print(torch.__version__, pandas.__version__, pytorch_lightning.__version__)'
+      - name: Run official pre-commit hooks on changed files
+        run: uv run --no-sync pre-commit run --files neuralforecast/models/deepar.py tests/test_models/test_deepar.py
+      - name: Confirm the new historical-input tests fail on upstream
+        shell: bash
+        run: |
+          model=neuralforecast/models/deepar.py
+          trap 'git restore --source=HEAD -- "$model"' EXIT
+          git show HEAD^:"$model" > "$model"
+          set +e
+          uv run --no-sync pytest tests/test_models/test_deepar.py -k 'hist_exog and not disabled' --no-cov --tb=short --junitxml="$RUNNER_TEMP/deepar-before.xml"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          uv run --no-sync python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'deepar-before.xml')
+          cases = root.findall('.//testcase')
+          assert len(cases) == 12, len(cases)
+          assert all(case.find('failure') is not None for case in cases)
+          assert not root.findall('.//error')
+          print('Confirmed: all 12 new historical-input cases fail without the patch.')
+          PY
+      - name: Run historical-input regressions with the patch
+        run: uv run --no-sync pytest tests/test_models/test_deepar.py -k hist_exog --no-cov --tb=short
+      - name: Run existing DeepAR and related recurrent model tests
+        run: >-
+          uv run --no-sync pytest
+          tests/test_models/test_deepar.py
+          tests/test_models/test_rnn.py
+          tests/test_models/test_lstm.py
+          tests/test_models/test_gru.py
+          tests/test_models/test_tcn.py
+          tests/test_models/test_dilated_rnn.py
+          -k 'not auto and not hist_exog' --no-cov --tb=short
