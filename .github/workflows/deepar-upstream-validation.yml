@@ -33,8 +33,11 @@ jobs:
           git diff --check HEAD^ HEAD
           git diff --stat HEAD^ HEAD
           test "$(git diff --name-only HEAD^ HEAD | wc -l)" -eq 2
-      - name: Install the documented CPU development environment
-        run: uv sync --python '${{ matrix.python-version }}' --group dev --torch-backend cpu
+      - name: Install CPU runtime and project development dependencies
+        run: |
+          uv venv --python '${{ matrix.python-version }}'
+          uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --python .venv/bin/python -e . --group dev 'pandas==2.3.3'
       - name: Report runtime versions
         run: uv run --no-sync python -c 'import sys, torch, pandas, pytorch_lightning; print(sys.version); print(torch.__version__, pandas.__version__, pytorch_lightning.__version__)'
       - name: Run official pre-commit hooks on changed files
